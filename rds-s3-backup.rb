@@ -11,6 +11,7 @@ class RdsS3Backup < Thor
   
   desc "s3_dump", "Runs a mysqldump from a restored snapshot of the specified RDS instance, and uploads the dump to S3"
   method_option :rds_instance_id
+  method_option :rds_region, :default => 'eu-west-1'
   method_option :s3_bucket
   method_option :s3_prefix, :default => 'db_dumps'
   method_option :aws_access_key_id
@@ -26,14 +27,23 @@ class RdsS3Backup < Thor
     my_options = build_configuration(options)
     
     rds        = Fog::AWS::RDS.new(:aws_access_key_id => my_options[:aws_access_key_id], 
-                                   :aws_secret_access_key => my_options[:aws_secret_access_key])
+                                   :aws_secret_access_key => my_options[:aws_secret_access_key],
+                                   :host => "rds.#{my_options[:rds_region]}.amazonaws.com")
 
     rds_server = rds.servers.get(my_options[:rds_instance_id])
+    
+    s3_regions = ['us-east-1', 'us-west-1', 'eu-west-1', 'ap-southeast-1', 'ap-northeast-1']
+    
     s3         = Fog::Storage.new(:provider => 'AWS', 
                                   :aws_access_key_id => my_options[:aws_access_key_id], 
                                   :aws_secret_access_key => my_options[:aws_secret_access_key], 
                                   :scheme => 'https')
-    s3_bucket  = s3.directories.get(my_options[:s3_bucket])
+    s3_buckets = []
+    
+    s3_regions.each do |s3_region|
+      s3_bucket  = s3.directories.get("#{s3_region}.#{my_options[:s3_bucket]}")
+      s3_buckets << s3_bucket
+    end
 
     snap_timestamp   = Time.now.strftime('%Y-%m-%d-%H-%M-%S-%Z')
     snap_name        = "s3-dump-snap-#{snap_timestamp}"
@@ -53,7 +63,7 @@ class RdsS3Backup < Thor
     backup_server.wait_for { ready? }
 
     mysqldump_command = Cocaine::CommandLine.new('mysqldump',
-                                                 '--opt --add-drop-table --single-transaction --order-by-primary -h :host_address -u :mysql_username --password=:mysql_password :mysql_database | gzip --fast -c > :backup_filepath', 
+                                                 '--single-transaction --quick -h :host_address -u :mysql_username --password=:mysql_password :mysql_database | gzip -9 -c > :backup_filepath', 
                                                  :host_address    => backup_server.endpoint['Address'], 
                                                  :mysql_username  => my_options[:mysql_username], 
                                                  :mysql_password  => my_options[:mysql_password], 
@@ -69,13 +79,14 @@ class RdsS3Backup < Thor
       exit(1)
     end
     
-    tries = 1
-    saved_dump = begin
-      s3_bucket.files.new(:key => File.join(my_options[:s3_prefix], backup_file_name), 
-                           :body => File.open(backup_file_filepath), 
-                           :acl => 'private', 
-                           :content_type => 'application/x-gzip'
-                           ).save
+    s3_buckets.each do |s3_bucket|
+      tries = 1
+      saved_dump = begin
+        s3_bucket.files.new(:key => File.join(my_options[:s3_prefix], backup_file_name), 
+                            :body => File.open(backup_file_filepath), 
+                            :acl => 'private', 
+                            :content_type => 'application/x-gzip'
+                            ).save
       rescue Exception => e
         if tries < 3
           puts "Retrying S3 upload after #{tries} tries"
@@ -87,14 +98,15 @@ class RdsS3Backup < Thor
         end
       end
       
-    if saved_dump
-      if my_options[:dump_ttl] > 0
-       prune_dumpfiles(s3_bucket, File.join(my_options[:s3_prefix], "#{rds_server.id}-mysqldump-"), my_options[:dump_ttl])
-      end   
-    else
-      puts "S3 upload failed!"                        
+      if saved_dump
+        if my_options[:dump_ttl] > 0
+          prune_dumpfiles(s3_bucket, File.join(my_options[:s3_prefix], "#{rds_server.id}-mysqldump-"), my_options[:dump_ttl])
+        end   
+      else
+        puts "S3 upload failed!"                        
+      end
     end
-
+    
     cleanup(new_snap, backup_server, backup_file_filepath)
   end
   
