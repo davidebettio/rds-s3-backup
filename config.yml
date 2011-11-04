@@ -1,9 +1,9 @@
-rds_instance_id: xxx
-s3_bucket: xxx
-aws_access_key_id: xxx
-aws_secret_access_key: xxx
-mysql_database: xxx
-mysql_username: xxx
-mysql_password: xxx
+rds_instance_id: xxxx
+s3_bucket: xxxx
+aws_access_key_id: xxxx
+aws_secret_access_key: xxxx
+mysql_database: xxxx
+mysql_username: xxxx
+mysql_password: xxxx 
 dump_ttl: 40
-dump_directory: xxx
+dump_directory: /xxxx/xxxx 
