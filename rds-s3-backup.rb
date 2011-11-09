@@ -31,19 +31,6 @@ class RdsS3Backup < Thor
                                    :host => "rds.#{my_options[:rds_region]}.amazonaws.com")
 
     rds_server = rds.servers.get(my_options[:rds_instance_id])
-    
-    s3_regions = ['us-east-1', 'us-west-1', 'eu-west-1', 'ap-southeast-1', 'ap-northeast-1']
-    
-    s3         = Fog::Storage.new(:provider => 'AWS', 
-                                  :aws_access_key_id => my_options[:aws_access_key_id], 
-                                  :aws_secret_access_key => my_options[:aws_secret_access_key], 
-                                  :scheme => 'https')
-    s3_buckets = []
-    
-    s3_regions.each do |s3_region|
-      s3_bucket  = s3.directories.get("#{s3_region}.#{my_options[:s3_bucket]}")
-      s3_buckets << s3_bucket
-    end
 
     snap_timestamp   = Time.now.strftime('%Y-%m-%d-%H-%M-%S-%Z')
     snap_name        = "s3-dump-snap-#{snap_timestamp}"
@@ -52,16 +39,19 @@ class RdsS3Backup < Thor
     backup_file_name     = "#{rds_server.id}-mysqldump-#{snap_timestamp}.sql.gz"
     backup_file_filepath = File.join(my_options[:dump_directory], backup_file_name)
     
+    # New snapshot
     rds_server.snapshots.new(:id => snap_name).save
     new_snap = rds_server.snapshots.get(snap_name)
     new_snap.wait_for { ready? }
     new_snap.wait_for { ready? }
 
+    # New instance with taken snapshot
     rds.restore_db_instance_from_db_snapshot(new_snap.id, backup_server_id)
     backup_server = rds.servers.get(backup_server_id)
     backup_server.wait_for { ready? }
     backup_server.wait_for { ready? }
 
+    # DB dump
     mysqldump_command = Cocaine::CommandLine.new('mysqldump',
                                                  '--single-transaction --quick -h :host_address -u :mysql_username --password=:mysql_password :mysql_database | gzip -9 -c > :backup_filepath', 
                                                  :host_address    => backup_server.endpoint['Address'], 
@@ -79,7 +69,20 @@ class RdsS3Backup < Thor
       exit(1)
     end
     
-    s3_buckets.each do |s3_bucket|
+    # Upload to S3
+    s3_regions = ['us-east-1', 'us-west-1', 'eu-west-1', 'ap-southeast-1', 'ap-northeast-1']
+    s3_bucket_name = my_options[:s3_bucket]
+    
+    s3_regions.each do |s3_region|
+      s3 = Fog::Storage.new(:provider => 'AWS', 
+                            :aws_access_key_id => my_options[:aws_access_key_id], 
+                            :aws_secret_access_key => my_options[:aws_secret_access_key], 
+                            :scheme => 'https',
+                            :region => s3_region)
+      
+      s3_bucket_name_with_region = s3_bucket_name.gsub("$region$", s3_region)                             
+      s3_bucket = s3.directories.get(s3_bucket_name_with_region)
+      
       tries = 1
       saved_dump = begin
         s3_bucket.files.new(:key => File.join(my_options[:s3_prefix], backup_file_name), 
@@ -98,6 +101,7 @@ class RdsS3Backup < Thor
         end
       end
       
+      # Backup rotation
       if saved_dump
         if my_options[:dump_ttl] > 0
           prune_dumpfiles(s3_bucket, File.join(my_options[:s3_prefix], "#{rds_server.id}-mysqldump-"), my_options[:dump_ttl])
@@ -107,6 +111,7 @@ class RdsS3Backup < Thor
       end
     end
     
+    # Cleanup
     cleanup(new_snap, backup_server, backup_file_filepath)
   end
   
