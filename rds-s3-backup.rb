@@ -2,7 +2,6 @@
 
 require 'rubygems'
 require 'thor'
-require 'cocaine'
 require 'fog'
 require 'logger'
 
@@ -50,27 +49,24 @@ class RdsS3Backup < Thor
     backup_server = rds.servers.get(backup_server_id)
     backup_server.wait_for { ready? }
     backup_server.wait_for { ready? }
-
-    # DB dump
-    mysqldump_command = Cocaine::CommandLine.new('mysqldump',
-                                                 '--single-transaction --quick -h :host_address -u :mysql_username --password=:mysql_password :mysql_database | gzip -9 -c > :backup_filepath', 
-                                                 :host_address    => backup_server.endpoint['Address'], 
-                                                 :mysql_username  => my_options[:mysql_username], 
-                                                 :mysql_password  => my_options[:mysql_password], 
-                                                 :mysql_database  => my_options[:mysql_database], 
-                                                 :backup_filepath => backup_file_filepath,
-                                                 :logger          => Logger.new(STDOUT))
     
-    begin
-      mysqldump_command.run
-    rescue Cocaine::ExitStatusError, Cocaine::CommandNotFoundError => e
-      puts "Dump failed with error #{e.message}"
+    # DB dump
+    host_address = backup_server.endpoint['Address']
+    mysql_username = my_options[:mysql_username]
+    mysql_password = my_options[:mysql_password]
+    mysql_database = my_options[:mysql_database]
+    backup_filepath = backup_file_filepath
+    
+    mysqldump_command = "mysqldump --single-transaction --quick -h #{host_address} -u #{mysql_username} --password=#{mysql_password} #{mysql_database} | gzip -9 -c > #{backup_filepath}"
+    mysqldump_result = system(mysqldump_command)
+    if mysqldump_result.nil? || !mysqldump_result
+      puts "Dump failed with error: #{$?.to_s}"
       cleanup(new_snap, backup_server, backup_file_filepath)
       exit(1)
     end
     
     # Upload to S3
-    s3_regions = ['us-east-1', 'us-west-1', 'eu-west-1', 'ap-southeast-1', 'ap-northeast-1']
+    s3_regions = ['us-east-1', 'us-west-1', 'us-west-2', 'eu-west-1', 'ap-southeast-1', 'ap-northeast-1']
     s3_bucket_name = my_options[:s3_bucket]
     
     s3_regions.each do |s3_region|
