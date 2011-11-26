@@ -12,7 +12,7 @@ class RdsS3Backup < Thor
   method_option :rds_instance_id
   method_option :rds_region, :default => 'eu-west-1'
   method_option :s3_bucket
-  method_option :s3_prefix, :default => 'db_dumps'
+  method_option :s3_prefix, :default => ''
   method_option :aws_access_key_id
   method_option :aws_secret_access_key
   method_option :mysql_database
@@ -61,9 +61,15 @@ class RdsS3Backup < Thor
     mysqldump_result = system(mysqldump_command)
     if mysqldump_result.nil? || !mysqldump_result
       puts "Dump failed with error: #{$?.to_s}"
-      cleanup(new_snap, backup_server, backup_file_filepath)
+      delete_backup_snapshot(new_snap)
+      delete_backup_server(backup_server)
+      delete_backup_file(backup_file_filepath)
       exit(1)
     end
+    
+    # Delete snapshot & server
+    delete_backup_snapshot(new_snap)
+    delete_backup_server(backup_server)
     
     # Upload to S3
     s3_regions = ['us-east-1', 'us-west-1', 'us-west-2', 'eu-west-1', 'ap-southeast-1', 'ap-northeast-1']
@@ -107,8 +113,8 @@ class RdsS3Backup < Thor
       end
     end
     
-    # Cleanup
-    cleanup(new_snap, backup_server, backup_file_filepath)
+    # Delete mysqldump file
+    delete_backup_file(backup_file_filepath)
   end
   
   no_tasks do
@@ -132,13 +138,17 @@ class RdsS3Backup < Thor
       merged_options
     end
     
-    def cleanup(new_snap, backup_server, backup_file_filepath)
+    def delete_backup_snapshot(new_snap)
       new_snap.wait_for { ready? }
       new_snap.destroy
-      
+    end
+    
+    def delete_backup_server(backup_server)
       backup_server.wait_for { ready? }
       backup_server.destroy(nil)
-      
+    end
+    
+    def delete_backup_file(backup_file_filepath)
       File.unlink(backup_file_filepath)
     end
     
